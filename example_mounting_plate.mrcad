@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "units": "mm",
+  "layers": [
+    "0",
+    "Construction",
+    "Dimensions"
+  ],
+  "entities": [
+    {
+      "type": "rectangle",
+      "a": [
+        0,
+        0
+      ],
+      "b": [
+        160,
+        100
+      ],
+      "layer": "0"
+    },
+    {
+      "type": "circle",
+      "center": [
+        30,
+        30
+      ],
+      "radius": 8,
+      "layer": "0"
+    },
+    {
+      "type": "circle",
+      "center": [
+        130,
+        30
+      ],
+      "radius": 8,
+      "layer": "0"
+    },
+    {
+      "type": "circle",
+      "center": [
+        30,
+        70
+      ],
+      "radius": 8,
+      "layer": "0"
+    },
+    {
+      "type": "circle",
+      "center": [
+        130,
+        70
+      ],
+      "radius": 8,
+      "layer": "0"
+    },
+    {
+      "type": "dimension",
+      "a": [
+        0,
+        0
+      ],
+      "b": [
+        160,
+        0
+      ],
+      "layer": "Dimensions"
+    }
+  ]
+}

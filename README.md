@@ -1,2 +1,1 @@
-# MerbeinCAD
-2D and 3D CAD software for mechanical engineering
+MerbeinCAD v0.4 — sources, dependencies, geometry and Windows launch instructions are in README_FIRST.txt in the update package. All drawings use millimetres.\n
