@@ -1,4 +1,4 @@
-"""MerbeinCAD v0.6 - lightweight engineering 2D CAD prototype."""
+"""MerbeinCAD v0.7 - lightweight engineering 2D CAD prototype."""
 import copy
 import json
 import math
@@ -12,12 +12,13 @@ import shutil
 from updater import latest_release, compare_version, download_release, unpack_release, clean_repo
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
 from model import Document, bounding_box, distance, endpoints, move_entity
 from exporters import export_dxf, export_dwg, export_step
 from snapping import nearest_snap
 from geometry_tools import trim_line, extend_line, circle_tangents
 from geometry_v05 import group_rectangular_array, group_polar_array, corner_edit, edited_group
+from solid3d import make_solid, project, export_solid_step, profile_points
 
 CONFIG=Path.home()/'.merbeincad_settings.json'
 COLORS=['#e3ebf5','#38bdf8','#f59e0b','#a78bfa','#34d399','#fb7185']
@@ -25,13 +26,13 @@ COLORS=['#e3ebf5','#38bdf8','#f59e0b','#a78bfa','#34d399','#fb7185']
 class CAD(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('MerbeinCAD 0.6  |  Untitled')
+        self.title('MerbeinCAD 0.7  |  Untitled')
         self.geometry('1250x800');self.minsize(850,560)
         self.doc=Document();self.path=None;self.history=[];self.future=[]
         self.tool='select';self.pending=[];self.preview=None;self.selected=None;self.selection=set();self.drag=None;self.marquee=None
         self.zoom=3.0;self.cx=0.0;self.cy=0.0
         self.tangent_first=None;self.tangent_choices=[]
-        self.array_pick=None
+        self.array_pick=None;self.dimension_offset_pick=False
         self.grid_on=tk.BooleanVar(value=True);self.snap_on=tk.BooleanVar(value=True)
         self.snap_size=tk.StringVar(value='5');self.snap_marker=None
         self.snap_modes={k:tk.BooleanVar(value=True) for k in ('Endpoint','Midpoint','Centre','Quadrant','Intersection','Tangent')}
@@ -59,6 +60,8 @@ class CAD(tk.Tk):
         menu=tk.Menu(self);self.config(menu=menu)
         file=tk.Menu(menu,tearoff=0);menu.add_cascade(label='File',menu=file)
         for label,callback in [('New',self.new_project),('Open project…',self.open_project),('Save',self.save),('Save as…',self.save_as),('Import DXF…',self.import_dxf)]:file.add_command(label=label,command=callback)
+        file.add_separator();file.add_command(label='Save as DXF…',command=self.save_dxf)
+        file.add_command(label='Save as STEP…',command=self.save_step)
         file.add_separator();file.add_command(label='Print / PDF…',command=self.print_drawing)
         file.add_separator();file.add_command(label='Exit',command=self.destroy)
         exports=tk.Menu(menu,tearoff=0);menu.add_cascade(label='Export',menu=exports)
@@ -68,11 +71,19 @@ class CAD(tk.Tk):
         exports.add_separator();exports.add_command(label='Configure DWG converter…',command=self.configure_oda)
         edit=tk.Menu(menu,tearoff=0);menu.add_cascade(label='Edit',menu=edit)
         for name,callback in [('Undo',self.undo),('Redo',self.redo),('Delete selected',self.delete_selected),('Edit selected geometry…',self.edit_selected),('Fit drawing',self.fit),('Rectangular array…',self.rectangular_array),('Polar array…',self.polar_array),('Move by…',self.move_precise),('Copy by…',self.copy_precise),('Rotate by…',self.rotate_precise),('Fillet two lines…',self.fillet),('Chamfer two lines…',self.chamfer),('Circle radius dimension…',self.radius_dimension),('Circle diameter dimension…',self.diameter_dimension)]:edit.add_command(label=name,command=callback)
+        layers_menu=tk.Menu(menu,tearoff=0);menu.add_cascade(label='Layers',menu=layers_menu)
+        layers_menu.add_command(label='Add layer…',command=self.add_layer)
+        layers_menu.add_command(label='Edit current layer colour / linetype…',command=self.edit_layer_style)
+        space_menu=tk.Menu(menu,tearoff=0);menu.add_cascade(label='3D',menu=space_menu)
+        space_menu.add_command(label='Add 3D point (X,Y,Z)…',command=self.add_point3d)
+        space_menu.add_command(label='Extrude selected closed profile…',command=self.extrude_selected)
+        space_menu.add_command(label='Revolve selected closed profile…',command=self.revolve_selected)
+        space_menu.add_separator();space_menu.add_command(label='Open 3D viewer / Orbit…',command=self.open_3d_view)
         helpmenu=tk.Menu(menu,tearoff=0);menu.add_cascade(label='Help',menu=helpmenu)
         helpmenu.add_command(label='Check for Updates (GitHub)…',command=self.check_updates)
         helpmenu.add_command(label='Configure GitHub repository…',command=self.configure_github)
         helpmenu.add_separator()
-        helpmenu.add_command(label='Version',command=lambda:messagebox.showinfo('MerbeinCAD','MerbeinCAD v0.6\nMouse-picked polar centre, Esc to Select, and toolbar tooltips.'))
+        helpmenu.add_command(label='Version',command=lambda:messagebox.showinfo('MerbeinCAD','MerbeinCAD v0.7\n3D wireframe viewer, layers, dimensions, DXF/STEP export.'))
         helpmenu.add_command(label='How to draw',command=lambda:messagebox.showinfo('Controls','Left click: points / select\nRight click: finish polyline\nMiddle mouse drag: pan\nWheel: zoom\nCtrl+click: alternate pan\nEsc: cancel command and return to Select\nDelete: delete selected\nDouble-click selected: edit exact coordinates\n\nCoordinate box: type x,y and press Add point.\nCoordinates and dimensions are in millimetres.'))
         tools=ttk.Frame(self,padding=4);tools.pack(side='top',fill='x')
         # Grouped toolbars keep icons readable on laptop screens and at 125% DPI.
@@ -91,9 +102,22 @@ class CAD(tk.Tk):
         ttk.Label(aux,text='  Layer').pack(side='left')
         self.layerbox=ttk.Combobox(aux,textvariable=self.layer,values=self.doc.layers,width=13,state='readonly');self.layerbox.pack(side='left')
         self.make_text_button(aux,'+',self.add_layer,'Add drawing layer',width=3)
+        self.make_text_button(aux,'Layer style',self.edit_layer_style,'Set colour and line type for the current layer')
+        self.make_text_button(aux,'3D Point',self.add_point3d,'Add a point at exact 3D X,Y,Z coordinates')
+        self.make_text_button(aux,'3D View',self.open_3d_view,'Open 3D viewer: drag to orbit, Shift-drag to pan, wheel to zoom')
+        self.make_text_button(aux,'Extrude',self.extrude_selected,'Extrude the selected closed sketch into 3D')
+        self.make_text_button(aux,'Revolve',self.revolve_selected,'Revolve the selected closed sketch about X or Y axis')
         ttk.Checkbutton(aux,text='Grid',variable=self.grid_on,command=self.redraw).pack(side='left',padx=(8,0))
         ttk.Checkbutton(aux,text='Snap',variable=self.snap_on).pack(side='left')
         ttk.Label(aux,text='Spacing').pack(side='left');ttk.Entry(aux,textvariable=self.snap_size,width=5).pack(side='left')
+        try:
+            from PIL import Image, ImageTk
+            logo=Image.open(Path(__file__).with_name('merbein_robotics_logo.png'))
+            logo.thumbnail((94,48),Image.Resampling.LANCZOS)
+            self.logo_image=ImageTk.PhotoImage(logo)
+            ttk.Label(aux,image=self.logo_image).pack(side='right',padx=7)
+        except Exception:
+            ttk.Label(aux,text='Merbein Robotics',foreground='#ef4444',font=('Segoe UI',10,'bold')).pack(side='right',padx=5)
         self.make_text_button(aux,'Check for Updates',self.check_updates,'Check GitHub for a newer MerbeinCAD release',side='right',padx=5)
         snapbar=ttk.Frame(self,padding=(8,1));snapbar.pack(side='top',fill='x')
         ttk.Label(snapbar,text='Object snaps:').pack(side='left')
@@ -135,9 +159,9 @@ class CAD(tk.Tk):
         actions={'rectarray':self.rectangular_array,'polararray':self.polar_array,'print':self.print_drawing,'move':self.move_precise,'copy':self.copy_precise,'rotate':self.rotate_precise,'fillet':self.fillet,'chamfer':self.chamfer}
         button.configure(command=actions.get(kind,lambda k=kind:self.set_tool(k)))
         button.pack(side='left',padx=1)
-        self.ToolTip(button,label + '  (' + kind + ')')
-        button.bind('<Enter>',lambda e,n=label:self.status.set(n))
-        button.bind('<Leave>',lambda e:self.status.set('Ready — units: mm'))
+        self.ToolTip(button,label)
+        button.bind('<Enter>',lambda e,n=label:self.status.set(n),add='+')
+        button.bind('<Leave>',lambda e:self.status.set('Ready — units: mm'),add='+')
         self.icon_buttons[kind]=button
 
     def make_text_button(self,parent,label,command,tip,side='left',**pack):
@@ -149,7 +173,7 @@ class CAD(tk.Tk):
 
     def escape_command(self,event=None):
         """CAD-standard Esc: cancel in-progress operation and return to selection."""
-        self.array_pick=None
+        self.array_pick=None;self.dimension_offset_pick=False
         self.cancel()
         self.tool='select'
         self.status.set('Command cancelled — Select tool active')
@@ -192,15 +216,24 @@ class CAD(tk.Tk):
         self.array_pick=None;self.tool=tool;self.cancel();self.tangent_first=None;self.tangent_choices=[]
         self.status.set({'bitangent':'Click first circle then second circle; choose tangent line', 'trim':'Click the portion of a LINE to remove (other objects are cutting boundaries)', 'extend':'Click near an end of a LINE to extend it to the nearest boundary', 'delete':'Click an object to delete it'}.get(tool,f'{tool.title()} tool — mm'))
     def cancel(self):self.pending=[];self.preview=None;self.snap_marker=None;self.drag=None;self.marquee=None;self.tangent_first=None;self.tangent_choices=[];self.redraw()
-    def snapshot(self):self.history.append(copy.deepcopy(self.doc.entities));self.history=self.history[-80:];self.future.clear()
+    def snapshot(self):
+        self.history.append((copy.deepcopy(self.doc.entities),copy.deepcopy(self.doc.solids)))
+        self.history=self.history[-80:];self.future.clear()
     def undo(self):
-        if self.history:self.future.append(copy.deepcopy(self.doc.entities));self.doc.entities=self.history.pop();self.selected=None;self.selection.clear();self.redraw()
+        if self.history:
+            self.future.append((copy.deepcopy(self.doc.entities),copy.deepcopy(self.doc.solids)))
+            self.doc.entities,self.doc.solids=self.history.pop();self.selected=None;self.selection.clear();self.redraw()
     def redo(self):
-        if self.future:self.history.append(copy.deepcopy(self.doc.entities));self.doc.entities=self.future.pop();self.selected=None;self.selection.clear();self.redraw()
+        if self.future:
+            self.history.append((copy.deepcopy(self.doc.entities),copy.deepcopy(self.doc.solids)))
+            self.doc.entities,self.doc.solids=self.future.pop();self.selected=None;self.selection.clear();self.redraw()
     def add_entity(self,e):
         self.snapshot();e['layer']=self.layer.get();self.doc.entities.append(e);self.selected=len(self.doc.entities)-1;self.selection={self.selected};self.redraw()
     def accept_point(self,p):
         if self.tool=='select':return
+        if self.tool=='dimension' and len(self.pending)==2:
+            a,b=self.pending;self.pending=[]
+            self.add_entity({'type':'dimension','a':a,'b':b,'offset':self.dimension_offset(a,b,p),'layer':'Dimensions'});return
         if self.tool=='polyline':self.pending.append(p);self.redraw();return
         self.pending.append(p)
         if self.tool=='circle' and len(self.pending)==1 and self.circle_method.get()!='Point on circumference':
@@ -212,13 +245,15 @@ class CAD(tk.Tk):
             self.pending=[]
             radius=size/2 if self.circle_method.get()=='Diameter' else size
             self.add_entity({'type':'circle','center':p,'radius':radius});return
+        if self.tool=='dimension' and len(self.pending)==2:
+            self.status.set('Click a third point to position the dimension line away from geometry')
+            self.redraw();return
         if len(self.pending)<2:self.redraw();return
         a,b=self.pending[:2];self.pending=[]
         if distance(a,b)<1e-8:return
         if self.tool=='line':e={'type':'line','a':a,'b':b}
         elif self.tool=='rectangle':e={'type':'rectangle','a':a,'b':b}
         elif self.tool=='circle':e={'type':'circle','center':a,'radius':distance(a,b)}
-        elif self.tool=='dimension':e={'type':'dimension','a':a,'b':b,'layer':'Dimensions'}
         else:return
         self.add_entity(e)
     def finish_polyline(self):
@@ -243,6 +278,7 @@ class CAD(tk.Tk):
         tol=10/self.zoom
         for i in reversed(range(len(self.doc.entities))):
             e=self.doc.entities[i];t=e['type']
+            if t=='point3d':continue
             if t=='circle':d=abs(distance(p,e['center'])-e['radius'])
             else:
                 if t=='line' or t=='dimension':pts=[e['a'],e['b']]
@@ -355,22 +391,42 @@ class CAD(tk.Tk):
     def line(self,a,b,fill,width=2,dash=None):
         self.canvas.create_line(*self.screen(a),*self.screen(b),fill=fill,width=width,dash=dash)
     def draw_entity(self,e,selected=False):
-        color='#fb7185' if selected else COLORS[self.doc.layers.index(e.get('layer','0'))%len(COLORS)] if e.get('layer','0') in self.doc.layers else '#e3ebf5'
+        layer=e.get('layer','0');style=self.doc.layer_styles.get(layer,{})
+        color='#fb7185' if selected else style.get('color') or (COLORS[self.doc.layers.index(layer)%len(COLORS)] if layer in self.doc.layers else '#e3ebf5')
+        linetype=style.get('linetype','CONTINUOUS').upper()
+        dash={'HIDDEN':(8,6),'CENTER':(18,5,3,5),'DASHDOT':(14,5,2,5)}.get(linetype)
         t=e['type']
-        if t=='line':self.line(e['a'],e['b'],color)
+        if t=='line':self.line(e['a'],e['b'],color,dash=dash)
         elif t=='rectangle':
-            x1,y1=e['a'];x2,y2=e['b'];self.canvas.create_rectangle(*self.screen([x1,y1]),*self.screen([x2,y2]),outline=color,width=2)
+            x1,y1=e['a'];x2,y2=e['b'];self.canvas.create_rectangle(*self.screen([x1,y1]),*self.screen([x2,y2]),outline=color,width=2,dash=dash)
         elif t=='circle':
-            x,y=self.screen(e['center']);r=e['radius']*self.zoom;self.canvas.create_oval(x-r,y-r,x+r,y+r,outline=color,width=2)
+            x,y=self.screen(e['center']);r=e['radius']*self.zoom;self.canvas.create_oval(x-r,y-r,x+r,y+r,outline=color,width=2,dash=dash)
         elif t=='polyline':
             pts=e['points']+([e['points'][0]] if e.get('closed') and e['points'] else [])
-            for a,b in zip(pts,pts[1:]):self.line(a,b,color)
+            for a,b in zip(pts,pts[1:]):self.line(a,b,color,dash=dash)
+        elif t=='point3d':
+            x,y=self.screen(e['xyz'][:2]);self.canvas.create_oval(x-4,y-4,x+4,y+4,outline=color,width=2)
+            self.canvas.create_text(x+8,y-8,anchor='sw',text=f"Z={e['xyz'][2]:g}",fill=color)
         elif t=='dimension':
-            a,b=e['a'],e['b'];self.line(a,b,color,1)
-            for p in (a,b):
-                x,y=self.screen(p);self.canvas.create_line(x-4,y-4,x+4,y+4,fill=color);self.canvas.create_line(x+4,y-4,x-4,y+4,fill=color)
-            a2=self.screen(a);b2=self.screen(b);length=distance(a,b)
-            self.canvas.create_text((a2[0]+b2[0])/2,(a2[1]+b2[1])/2-12,text=(('Ø' if e.get('kind')=='diameter' else 'R')+f'{e.get("value",length):.2f} mm') if e.get('kind') in ('radius','diameter') else f'{length:.2f} mm',fill=color,font=('Segoe UI',10,'bold'))
+            a,b=e['a'],e['b'];offset=float(e.get('offset',0.0))
+            dx=b[0]-a[0];dy=b[1]-a[1];length=math.hypot(dx,dy)
+            if length<1e-9:return
+            nx,ny=-dy/length,dx/length
+            aa=[a[0]+nx*offset,a[1]+ny*offset];bb=[b[0]+nx*offset,b[1]+ny*offset]
+            for orig,end in [(a,aa),(b,bb)]:
+                extension=[end[0]+nx*(2 if offset>=0 else -2),end[1]+ny*(2 if offset>=0 else -2)]
+                self.line(orig,extension,color,1)
+            self.line(aa,bb,color,1)
+            a2,b2=self.screen(aa),self.screen(bb)
+            angle=math.atan2(b2[1]-a2[1],b2[0]-a2[0])
+            for tip,ang in ((a2,angle),(b2,angle+math.pi)):
+                x,y=tip;w=9
+                self.canvas.create_polygon(x,y,x+w*math.cos(ang+.3),y+w*math.sin(ang+.3),x+w*math.cos(ang-.3),y+w*math.sin(ang-.3),fill=color)
+            txt=(('Ø' if e.get('kind')=='diameter' else 'R')+f'{e.get("value",length):.2f} mm') if e.get('kind') in ('radius','diameter') else f'{length:.2f} mm'
+            self.canvas.create_text((a2[0]+b2[0])/2,(a2[1]+b2[1])/2-13,text=txt,fill=color,font=('Segoe UI',10,'bold'))
+    def dimension_offset(self,a,b,p):
+        dx=b[0]-a[0];dy=b[1]-a[1];mag=math.hypot(dx,dy)
+        return 0 if mag<1e-9 else ((p[0]-a[0])*(-dy)+(p[1]-a[1])*dx)/mag
     def redraw(self):
         if not hasattr(self,'canvas'):return
         c=self.canvas;c.delete('all');w=c.winfo_width();h=c.winfo_height()
@@ -387,6 +443,9 @@ class CAD(tk.Tk):
         x0,y0=self.screen([0,0]);c.create_line(x0,0,x0,h,fill='#54718a');c.create_line(0,y0,w,y0,fill='#54718a')
         for i,e in enumerate(self.doc.entities):self.draw_entity(e,i in self.selection)
         if self.pending:
+            if self.tool=='dimension' and len(self.pending)==2 and self.preview is not None:
+                a,b=self.pending;off=self.dimension_offset(a,b,self.preview)
+                self.draw_entity({'type':'dimension','a':a,'b':b,'offset':off,'layer':'Dimensions'})
             for a,b in zip(self.pending,self.pending[1:]):self.line(a,b,'#fbbf24',2)
             if self.preview:self.line(self.pending[-1],self.preview,'#fbbf24',1,(4,4))
             for p in self.pending:
@@ -396,7 +455,7 @@ class CAD(tk.Tk):
         if self.marquee:
             x0,y0,x1,y1=self.marquee;c.create_rectangle(x0,y0,x1,y1,outline='#38bdf8',dash=(4,3),width=1)
         self.draw_snap_marker()
-        c.create_text(w-12,12,anchor='ne',text='MERBEIN ROBOTICS  |  CAD v0.6',fill='#7697b4',font=('Segoe UI',10,'bold'))
+        c.create_text(w-12,12,anchor='ne',text='MERBEIN ROBOTICS  |  CAD v0.7',fill='#7697b4',font=('Segoe UI',10,'bold'))
     def selected_entities(self):
         return [self.doc.entities[i] for i in sorted(self.selection) if i<len(self.doc.entities)]
     def selection_required(self):
@@ -498,7 +557,7 @@ class CAD(tk.Tk):
         e=self.doc.entities[next(iter(self.selection))]
         if e['type']!='circle':messagebox.showerror('Dimension','Select a circle.');return
         center=e['center'];end=[center[0]+e['radius'],center[1]]
-        self.add_entity({'type':'dimension','a':list(center),'b':end,'kind':'diameter' if diameter else 'radius','value':(2 if diameter else 1)*e['radius']})
+        self.add_entity({'type':'dimension','a':list(center),'b':end,'offset':max(5.,e['radius']*.22),'kind':'diameter' if diameter else 'radius','value':(2 if diameter else 1)*e['radius']})
     def radius_dimension(self):self.circle_dimension(False)
     def diameter_dimension(self):self.circle_dimension(True)
 
@@ -536,7 +595,7 @@ class CAD(tk.Tk):
                 if e['type']=='dimension':
                     a,b=e['a'],e['b'];x,y=pt([(a[0]+b[0])/2,(a[1]+b[1])/2]);pdf.setFont('Helvetica',9)
                     pdf.drawString(x+4,y+5, (('D' if e.get('kind')=='diameter' else 'R')+f'{e.get("value",distance(a,b)):.2f} mm') if e.get('kind') in ('radius','diameter') else f'{distance(a,b):.2f} mm')
-        pdf.setFont('Helvetica',8);pdf.drawString(margin,20,'MerbeinCAD v0.6 | mm | Fit to page - NOT 1:1 scale')
+        pdf.setFont('Helvetica',8);pdf.drawString(margin,20,'MerbeinCAD v0.7 | mm | Fit to page - NOT 1:1 scale')
         pdf.showPage();pdf.save()
         self.status.set('Print PDF saved: '+file)
         if messagebox.askyesno('PDF ready','Drawing saved to PDF. Open it for printing?'):
@@ -556,6 +615,93 @@ class CAD(tk.Tk):
             if changed.get('type')!=e['type']:raise ValueError('Type cannot change')
             self.snapshot();self.doc.entities[self.selected]=changed;self.redraw()
         except Exception as exc:messagebox.showerror('Invalid geometry',str(exc))
+    def edit_layer_style(self):
+        layer=self.layer.get()
+        style=self.doc.layer_styles.get(layer,{})
+        options=['CONTINUOUS','HIDDEN','CENTER','DASHDOT']
+        kind=simpledialog.askstring('Layer line type','Select line type: CONTINUOUS, HIDDEN, CENTER or DASHDOT',initialvalue=style.get('linetype','CONTINUOUS'),parent=self)
+        if kind is None:return
+        kind=kind.strip().upper()
+        if kind not in options:messagebox.showerror('Layer','Choose one of: '+', '.join(options));return
+        color=colorchooser.askcolor(color=style.get('color','#38bdf8'),title='Choose colour for layer '+layer,parent=self)[1]
+        if color is None:return
+        self.doc.layer_styles[layer]={'linetype':kind,'color':color}
+        self.redraw()
+
+    def selected_profile(self):
+        if len(self.selection)!=1:
+            messagebox.showinfo('3D profile','Select exactly one closed rectangle, circle or polyline in the 2D drawing.');return None
+        e=self.doc.entities[next(iter(self.selection))]
+        try:profile_points(e)
+        except ValueError as exc:messagebox.showerror('3D profile',str(exc));return None
+        return copy.deepcopy(e)
+
+    def extrude_selected(self):
+        profile=self.selected_profile()
+        if profile is None:return
+        depth=simpledialog.askfloat('3D Extrude','Extrusion depth (mm):',initialvalue=20,minvalue=0.001,parent=self)
+        if depth is None:return
+        self.snapshot();self.doc.solids.append({'profile':profile,'operation':'extrude','amount':depth})
+        self.open_3d_view()
+
+    def revolve_selected(self):
+        profile=self.selected_profile()
+        if profile is None:return
+        axis=simpledialog.askstring('3D Revolve','Axis through drawing origin: X or Y?',initialvalue='Y',parent=self)
+        if axis is None:return
+        axis=axis.strip().upper()
+        if axis not in ('X','Y'):messagebox.showerror('Revolve','Choose X or Y');return
+        amount=simpledialog.askfloat('3D Revolve','Angle in degrees (up to 360):',initialvalue=360,minvalue=.001,maxvalue=360,parent=self)
+        if amount is None:return
+        self.snapshot();self.doc.solids.append({'profile':profile,'operation':'revolve','amount':amount,'axis':axis})
+        self.open_3d_view()
+
+    def add_point3d(self):
+        raw=simpledialog.askstring('3D point','Enter X,Y,Z in millimetres:',initialvalue='0,0,0',parent=self)
+        if raw is None:return
+        try:
+            values=[float(x.strip()) for x in raw.split(',')]
+            if len(values)!=3 or not all(math.isfinite(x) for x in values):raise ValueError()
+        except ValueError:messagebox.showerror('3D point','Enter three finite coordinates: X,Y,Z');return
+        self.add_entity({'type':'point3d','xyz':values})
+        self.open_3d_view()
+
+    def open_3d_view(self):
+        viewer=tk.Toplevel(self);viewer.title('MerbeinCAD v0.7 | 3D View — Orbit / Pan');viewer.geometry('950x700')
+        az=[35.0];el=[25.0];scale=[2.5];pan=[0.,0.];last=[None]
+        bar=ttk.Frame(viewer,padding=5);bar.pack(fill='x')
+        ttk.Label(bar,text='Left-drag: Orbit     Shift+left-drag or middle-drag: Pan     Wheel: Zoom     Units: mm').pack(side='left')
+        canvas=tk.Canvas(viewer,bg='#101827',highlightthickness=0);canvas.pack(fill='both',expand=True)
+        def draw(event=None):
+            canvas.delete('all');w,h=canvas.winfo_width(),canvas.winfo_height();origin=(w/2,h/2)
+            if w<10:return
+            def pt(v):return project(v,az[0],el[0],scale[0],origin,pan)
+            for a,b,color in [([0,0,0],[50,0,0],'#fb7185'),([0,0,0],[0,50,0],'#4ade80'),([0,0,0],[0,0,50],'#38bdf8')]:
+                canvas.create_line(*pt(a),*pt(b),fill=color,width=2,arrow='last')
+            for solid in self.doc.solids:
+                try:vertices,edges=make_solid(solid['profile'],solid['operation'],float(solid['amount']),solid.get('axis','Y'))
+                except ValueError:continue
+                for i,j in edges:canvas.create_line(*pt(vertices[i]),*pt(vertices[j]),fill='#e3ebf5',width=1)
+            for entity in self.doc.entities:
+                if entity['type']=='point3d':
+                    x,y=pt(entity['xyz']);canvas.create_oval(x-4,y-4,x+4,y+4,fill='#fbbf24',outline='')
+                    canvas.create_text(x+6,y-6,anchor='sw',fill='#fbbf24',text=','.join(f'{v:g}' for v in entity['xyz']))
+            canvas.create_text(12,10,anchor='nw',fill='#e3ebf5',text=f'Azimuth {az[0]:.1f}°   Elevation {el[0]:.1f}°   {len(self.doc.solids)} solid(s), wireframe preview')
+        def start(event):last[:]=[(event.x,event.y)]
+        def move(event):
+            if last[0] is None:return
+            x,y=last[0];dx,dy=event.x-x,event.y-y;last[0]=(event.x,event.y)
+            if event.state & 0x0001 or event.num==2:
+                pan[0]+=dx/scale[0];pan[1]-=dy/scale[0]
+            else:
+                az[0]+=dx*.6;el[0]=max(-89,min(89,el[0]+dy*.6))
+            draw()
+        def wheel(event):scale[0]=max(.01,min(1000,scale[0]*(1.13 if event.delta>0 else 1/1.13)));draw()
+        canvas.bind('<Configure>',draw);canvas.bind('<ButtonPress-1>',start);canvas.bind('<B1-Motion>',move)
+        canvas.bind('<ButtonPress-2>',start);canvas.bind('<B2-Motion>',lambda e:(pan.__setitem__(0,pan[0]+(e.x-last[0][0])/scale[0]),pan.__setitem__(1,pan[1]-(e.y-last[0][1])/scale[0]),last.__setitem__(0,(e.x,e.y)),draw()) if last[0] else None)
+        canvas.bind('<MouseWheel>',wheel)
+        viewer.after(80,draw)
+
     def add_layer(self):
         name=simpledialog.askstring('New layer','Layer name:',parent=self)
         if name and name not in self.doc.layers:self.doc.layers.append(name);self.layerbox['values']=self.doc.layers;self.layer.set(name)
@@ -565,11 +711,11 @@ class CAD(tk.Tk):
         self.zoom=max(.03,min(200,.82*min(self.canvas.winfo_width()/w,self.canvas.winfo_height()/h)));self.redraw()
     def new_project(self):
         if not messagebox.askyesno('New project','Discard current unsaved work?'):return
-        self.doc=Document();self.path=None;self.history.clear();self.future.clear();self.selected=None;self.selection.clear();self.layer.set('0');self.layerbox['values']=self.doc.layers;self.title('MerbeinCAD 0.6 | Untitled');self.redraw()
+        self.doc=Document();self.path=None;self.history.clear();self.future.clear();self.selected=None;self.selection.clear();self.layer.set('0');self.layerbox['values']=self.doc.layers;self.title('MerbeinCAD 0.7 | Untitled');self.redraw()
     def open_project(self):
         filename=filedialog.askopenfilename(filetypes=[('MerbeinCAD projects','*.mrcad')]);
         if not filename:return
-        try:self.doc=Document.load(filename);self.path=filename;self.layerbox['values']=self.doc.layers;self.layer.set(self.doc.layers[0]);self.history.clear();self.future.clear();self.selected=None;self.selection.clear();self.title('MerbeinCAD 0.6 | '+Path(filename).name);self.fit()
+        try:self.doc=Document.load(filename);self.path=filename;self.layerbox['values']=self.doc.layers;self.layer.set(self.doc.layers[0]);self.history.clear();self.future.clear();self.selected=None;self.selection.clear();self.title('MerbeinCAD 0.7 | '+Path(filename).name);self.fit()
         except Exception as exc:messagebox.showerror('Open failed',str(exc))
     def configure_github(self):
         current=self.config_data.get('github_repo','')
@@ -598,12 +744,12 @@ class CAD(tk.Tk):
 
     def update_found(self,release,repo):
         tag=release.get('tag_name','')
-        try:newer=compare_version(tag,'0.6')>0
+        try:newer=compare_version(tag,'0.7')>0
         except ValueError:
             messagebox.showwarning('Unrecognised version',f'GitHub release tag {tag!r} is not a numeric version (e.g. v0.5).');return
         if not newer:
-            self.status.set('MerbeinCAD v0.6 is current')
-            messagebox.showinfo('Updates','MerbeinCAD v0.6 is up to date. Latest GitHub release: '+tag);return
+            self.status.set('MerbeinCAD v0.7 is current')
+            messagebox.showinfo('Updates','MerbeinCAD v0.7 is up to date. Latest GitHub release: '+tag);return
         assets=[a for a in release.get('assets',[]) if a.get('name')=='MerbeinCAD_Update.zip']
         if not assets:
             messagebox.showinfo('New release available',f'Version {tag} is available but has no MerbeinCAD_Update.zip asset.\n\nVisit: {release.get("html_url", "GitHub Releases")}');return
@@ -632,7 +778,7 @@ class CAD(tk.Tk):
             return
         # Updater is a separate PowerShell process, waits for CAD to close.
         try:
-            subprocess.Popen(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(script),'-WaitForExit'],creationflags=subprocess.CREATE_NEW_CONSOLE)
+            subprocess.Popen(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(script),'-WaitForExit','-AppProcessId',str(os.getpid())],creationflags=subprocess.CREATE_NEW_CONSOLE)
         except Exception as exc:messagebox.showerror('Cannot start installer',str(exc));return
         self.destroy()
 
@@ -642,7 +788,7 @@ class CAD(tk.Tk):
         except Exception as exc:messagebox.showerror('Save failed',str(exc))
     def save_as(self):
         filename=filedialog.asksaveasfilename(defaultextension='.mrcad',filetypes=[('MerbeinCAD project','*.mrcad')]);
-        if filename:self.path=filename;self.save();self.title('MerbeinCAD 0.6 | '+Path(filename).name)
+        if filename:self.path=filename;self.save();self.title('MerbeinCAD 0.7 | '+Path(filename).name)
     def save_dxf(self):
         path=filedialog.asksaveasfilename(defaultextension='.dxf',filetypes=[('AutoCAD DXF','*.dxf')]);
         if path:
@@ -660,6 +806,12 @@ class CAD(tk.Tk):
             try:export_dwg(self.doc,path,self.config_data['oda']);messagebox.showinfo('DWG exported',path)
             except Exception as exc:messagebox.showerror('DWG error',str(exc))
     def save_step(self):
+        if self.doc.solids:
+            path=filedialog.asksaveasfilename(defaultextension='.step',filetypes=[('STEP 3D solid','*.step'),('STEP file','*.stp')])
+            if path:
+                try:messagebox.showinfo('STEP exported',f'Exported {export_solid_step(self.doc.solids,path)} 3D solid(s).')
+                except Exception as exc:messagebox.showerror('STEP error',str(exc))
+            return
         value=simpledialog.askfloat('Extrude profiles to STEP','Extrusion thickness (mm):',minvalue=.001,initialvalue=5,parent=self)
         if value is None:return
         path=filedialog.asksaveasfilename(defaultextension='.step',filetypes=[('STEP 3D solid','*.step')]);

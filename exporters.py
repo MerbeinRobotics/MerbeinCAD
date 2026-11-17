@@ -14,6 +14,21 @@ def export_dxf(doc, path):
     msp=dwg.modelspace()
     for layer in doc.layers:
         if layer not in dwg.layers: dwg.layers.new(layer)
+        style=doc.layer_styles.get(layer,{})
+        record=dwg.layers.get(layer)
+        if style.get('color'):
+            from ezdxf.colors import rgb2int, RGB
+            color=style['color'].lstrip('#')
+            if len(color)==6:
+                rgb=RGB(*(int(color[i:i+2],16) for i in (0,2,4)))
+                record.dxf.true_color=rgb2int(rgb)
+        lt=style.get('linetype','CONTINUOUS').upper()
+        if lt in ('HIDDEN','CENTER','DASHDOT'):
+            if lt not in dwg.linetypes:
+                patterns={'HIDDEN':[.6,.3,-.3],'CENTER':[1.2,.7,-.15,.2,-.15],'DASHDOT':[1.0,.6,-.2,0,-.2]}
+                record_lt=dwg.linetypes.new(lt,dxfattribs={'description':'MerbeinCAD '+lt})
+                record_lt.setup_pattern(patterns[lt])
+            record.dxf.linetype=lt
     for e in doc.entities:
         t=e['type']; attrs={'layer':e.get('layer','0')}
         if t=='line': msp.add_line(e['a'],e['b'],dxfattribs=attrs)
@@ -22,10 +37,14 @@ def export_dxf(doc, path):
             msp.add_lwpolyline([(x1,y1),(x2,y1),(x2,y2),(x1,y2)],close=True,dxfattribs=attrs)
         elif t=='circle': msp.add_circle(e['center'],e['radius'],dxfattribs=attrs)
         elif t=='polyline': msp.add_lwpolyline(e['points'],close=e.get('closed',False),dxfattribs=attrs)
+        elif t=='point3d':msp.add_point(e['xyz'],dxfattribs=attrs)
         elif t=='dimension':
-            a,b=e['a'],e['b']; mid=((a[0]+b[0])/2,(a[1]+b[1])/2)
+            a,b=e['a'],e['b'];d=math.dist(a,b);off=float(e.get('offset',0));nx,ny=(-(b[1]-a[1])/d,(b[0]-a[0])/d) if d else (0,1)
+            start=(a[0]+nx*off,a[1]+ny*off);end=(b[0]+nx*off,b[1]+ny*off)
+            msp.add_line(a,start,dxfattribs=attrs);msp.add_line(b,end,dxfattribs=attrs)
+            mid=((start[0]+end[0])/2,(start[1]+end[1])/2)
             # Dimension geometry and measurement are real model-space entities.
-            msp.add_line(a,b,dxfattribs=attrs)
+            msp.add_line(start,end,dxfattribs=attrs)
             v=math.dist(a,b)
             msp.add_text(f'{v:.2f}',dxfattribs={**attrs,'height':2.5,'insert':mid})
     dwg.saveas(str(path))

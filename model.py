@@ -19,6 +19,7 @@ def entity_points(e):
         x,y=e['center']; r=e['radius']; return [[x-r,y-r],[x+r,y+r],[x,y-r],[x,y+r]]
     if t=='polyline': return e['points']
     if t=='dimension': return [e['a'],e['b']]
+    if t=='point3d': return [e['xyz'][:2]]
     return []
 
 
@@ -29,6 +30,7 @@ def endpoints(e):
 
 def move_entity(e, dx, dy):
     out=copy.deepcopy(e)
+    if 'xyz' in out: out['xyz']=[out['xyz'][0]+dx,out['xyz'][1]+dy,out['xyz'][2]]
     for k in ('a','b','center'):
         if k in out: out[k]=[out[k][0]+dx,out[k][1]+dy]
     if 'points' in out: out['points']=[[p[0]+dx,p[1]+dy] for p in out['points']]
@@ -46,15 +48,17 @@ class Document:
     entities: list = field(default_factory=list)
     layers: list = field(default_factory=lambda:['0','Construction','Dimensions'])
     units: str = 'mm'
+    layer_styles: dict = field(default_factory=dict)
+    solids: list = field(default_factory=list)
 
     def save(self,path):
-        Path(path).write_text(json.dumps({'version':1,'units':self.units,'layers':self.layers,'entities':self.entities},indent=2),encoding='utf-8')
+        Path(path).write_text(json.dumps({'version':1,'units':self.units,'layers':self.layers,'entities':self.entities,'layer_styles':self.layer_styles,'solids':self.solids},indent=2),encoding='utf-8')
 
     @classmethod
     def load(cls,path):
         d=json.loads(Path(path).read_text(encoding='utf-8'))
         if d.get('version')!=1 or d.get('units')!='mm' or not isinstance(d.get('entities'),list):
             raise ValueError('Unsupported project format')
-        valid={'line','rectangle','circle','polyline','dimension'}
+        valid={'line','rectangle','circle','polyline','dimension','point3d'}
         if any(e.get('type') not in valid for e in d['entities']): raise ValueError('Unsupported entity')
-        return cls(d['entities'],d.get('layers',['0','Construction','Dimensions']),'mm')
+        return cls(d['entities'],d.get('layers',['0','Construction','Dimensions']),'mm',d.get('layer_styles',{}),d.get('solids',[]))

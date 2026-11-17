@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "units": "mm",
+  "layers": [
+    "0",
+    "Centre",
+    "Hidden",
+    "Dimensions"
+  ],
+  "entities": [
+    {
+      "type": "rectangle",
+      "a": [
+        10,
+        10
+      ],
+      "b": [
+        70,
+        40
+      ],
+      "layer": "0"
+    },
+    {
+      "type": "circle",
+      "center": [
+        25,
+        25
+      ],
+      "radius": 5,
+      "layer": "Hidden"
+    },
+    {
+      "type": "line",
+      "a": [
+        0,
+        25
+      ],
+      "b": [
+        80,
+        25
+      ],
+      "layer": "Centre"
+    },
+    {
+      "type": "dimension",
+      "a": [
+        10,
+        10
+      ],
+      "b": [
+        70,
+        10
+      ],
+      "offset": -12,
+      "layer": "Dimensions"
+    },
+    {
+      "type": "point3d",
+      "xyz": [
+        20,
+        15,
+        30
+      ],
+      "layer": "0"
+    }
+  ],
+  "layer_styles": {
+    "0": {
+      "color": "#e3ebf5",
+      "linetype": "CONTINUOUS"
+    },
+    "Centre": {
+      "color": "#4ade80",
+      "linetype": "CENTER"
+    },
+    "Hidden": {
+      "color": "#f59e0b",
+      "linetype": "HIDDEN"
+    },
+    "Dimensions": {
+      "color": "#38bdf8",
+      "linetype": "CONTINUOUS"
+    }
+  },
+  "solids": [
+    {
+      "profile": {
+        "type": "rectangle",
+        "a": [
+          10,
+          10
+        ],
+        "b": [
+          70,
+          40
+        ]
+      },
+      "operation": "extrude",
+      "amount": 12
+    },
+    {
+      "profile": {
+        "type": "rectangle",
+        "a": [
+          85,
+          10
+        ],
+        "b": [
+          92,
+          35
+        ]
+      },
+      "operation": "revolve",
+      "axis": "Y",
+      "amount": 360
+    }
+  ]
+}

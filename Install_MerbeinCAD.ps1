@@ -1,4 +1,4 @@
-# MerbeinCAD v0.6 first-time installation on Windows (run through Install_MerbeinCAD.bat).
+# MerbeinCAD v0.7 first-time installation on Windows (run through Install_MerbeinCAD.bat).
 $ErrorActionPreference='Stop'
 $root='C:\MerbeinCAD'
 $app=Join-Path $root 'Application'
@@ -51,7 +51,7 @@ try {
     $shortcut=$shell.CreateShortcut((Join-Path $desktop 'MerbeinCAD.lnk'))
     $shortcut.TargetPath=Join-Path $app 'launch_windows.bat'
     $shortcut.WorkingDirectory=$app
-    $shortcut.Description='MerbeinCAD v0.6 engineering CAD'
+    $shortcut.Description='MerbeinCAD v0.7 engineering CAD'
     $shortcut.Save()
     Write-Host 'Installing required Python packages (internet connection required)...'
     & $python -m pip install -r (Join-Path $app 'requirements.txt')
