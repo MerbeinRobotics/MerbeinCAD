@@ -1,1 +1,1 @@
-MerbeinCAD v0.4 — sources, dependencies, geometry and Windows launch instructions are in README_FIRST.txt in the update package. All drawings use millimetres.\n
+MerbeinCAD v0.6: Esc cancels current operation and selects, polar-array centre pick with object snapping, hover tooltips, and Windows first-install script. For updates run Update_MerbeinCAD.bat at archive root; for fresh installs run Application/Install_MerbeinCAD.bat.
